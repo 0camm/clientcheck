@@ -1,0 +1,26 @@
+name: Build ClientCheck exe
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install customtkinter psutil pyinstaller
+
+      - name: Build exe
+        run: pyinstaller --noconfirm --onefile --windowed --uac-admin --name ClientCheck --collect-all customtkinter ClientCheck.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ClientCheck-exe
+          path: dist/ClientCheck.exe
