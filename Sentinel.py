@@ -1,17 +1,76 @@
 # Sentinel.py
-# Local-only diagnostic version.
-# Remote webhook logging and remote key validation have been removed.
+# Sentinel: local client check tool.
+# Needs a key. The key (plus a hashed PC id) is checked online once at startup.
+# Nothing about your scan results is ever sent anywhere.
 
+import hashlib
+import json
 import os
 import socket
 import subprocess
 import threading
+import urllib.error
+import urllib.request
+import uuid
+import webbrowser
 from datetime import datetime
 
 import psutil
 import customtkinter as ctk
 
 PC_NAME = socket.gethostname()
+
+API_BASE = 'https://ccskeys.onrender.com'  # your Render key server
+DISCORD_URL = 'https://discord.gg/XxqjtYDrrV'
+LICENSE_DIR = os.path.join(
+    os.getenv('APPDATA') or os.path.expanduser('~'), 'Sentinel'
+)
+LICENSE_FILE = os.path.join(LICENSE_DIR, 'license.json')
+
+
+def device_id():
+    """Anonymous id for this PC (hash only; the raw values never leave it)."""
+    raw = f'{socket.gethostname()}|{uuid.getnode()}'
+    return hashlib.sha256(raw.encode()).hexdigest()[:32]
+
+
+def load_saved_key():
+    try:
+        with open(LICENSE_FILE, encoding='utf-8') as fh:
+            return str(json.load(fh).get('key', '')).strip()
+    except (OSError, ValueError):
+        return ''
+
+
+def save_key(key):
+    try:
+        os.makedirs(LICENSE_DIR, exist_ok=True)
+        with open(LICENSE_FILE, 'w', encoding='utf-8') as fh:
+            json.dump({'key': key}, fh)
+    except OSError:
+        pass
+
+
+def verify_key(key):
+    """Returns (ok, message)."""
+    body = json.dumps({'key': key, 'device': device_id()}).encode()
+    req = urllib.request.Request(
+        f'{API_BASE}/api/verify',
+        data=body,
+        method='POST',
+        headers={'Content-Type': 'application/json', 'User-Agent': 'Sentinel/1.0'},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=75) as resp:
+            return resp.status == 200, 'OK'
+    except urllib.error.HTTPError as exc:
+        try:
+            msg = json.loads(exc.read().decode()).get('error', 'invalid key')
+        except (ValueError, OSError):
+            msg = 'invalid key'
+        return False, msg.capitalize() + '.'
+    except (urllib.error.URLError, OSError, ValueError):
+        return False, 'Could not reach the key server. Check your internet and try again.'
 
 KEYWORDS = [
     'krnl', 'fluxus', 'synapse', 'scriptware', 'electron', 'hydrogen',
@@ -57,21 +116,93 @@ class CyberUI(ctk.CTk):
             text='SENTINEL',
             font=('Fixedsys', 40),
             text_color='#00FFFF'
-        ).pack(pady=(200, 20))
+        ).pack(pady=(160, 10))
 
         ctk.CTkLabel(
             self.login_overlay,
-            text='Local client check. Only scan systems you are authorized to inspect.',
+            text='Enter your key to continue.',
             text_color='#AAAAAA'
-        ).pack(pady=10)
+        ).pack(pady=(0, 16))
+
+        self.key_entry = ctk.CTkEntry(
+            self.login_overlay,
+            width=360,
+            height=42,
+            placeholder_text='SNTL-XXXX-XXXX-XXXX-XXXX',
+            justify='center'
+        )
+        self.key_entry.pack(pady=6)
+        self.key_entry.bind('<Return>', lambda _e: self.activate())
+
+        self.activate_btn = ctk.CTkButton(
+            self.login_overlay,
+            text='ACTIVATE',
+            command=self.activate,
+            fg_color='#00FF41',
+            text_color='#000',
+            width=360,
+            height=40
+        )
+        self.activate_btn.pack(pady=(10, 6))
 
         ctk.CTkButton(
             self.login_overlay,
-            text='CONTINUE',
-            command=self.continue_to_app,
-            fg_color='#00FF41',
-            text_color='#000'
-        ).pack(pady=20)
+            text='NEED A KEY? JOIN THE DISCORD',
+            command=lambda: webbrowser.open(DISCORD_URL),
+            fg_color='#111',
+            border_width=1,
+            border_color='#00FFFF',
+            text_color='#00FFFF',
+            hover_color='#222',
+            width=360,
+            height=36
+        ).pack(pady=6)
+
+        self.key_status = ctk.CTkLabel(
+            self.login_overlay, text='', text_color='#FF5555', wraplength=520
+        )
+        self.key_status.pack(pady=(14, 6))
+
+        ctk.CTkLabel(
+            self.login_overlay,
+            text=(
+                'Your key and an anonymous PC id are checked online, and the key is '
+                'tied to this PC.\nScan results stay on this computer. '
+                'Only scan systems you are authorized to inspect.'
+            ),
+            text_color='#777777',
+            wraplength=560
+        ).pack(pady=(10, 0))
+
+        saved = load_saved_key()
+        if saved:
+            self.key_entry.insert(0, saved)
+            self.after(400, self.activate)
+
+    def activate(self):
+        key = self.key_entry.get().strip()
+        if not key:
+            self.key_status.configure(text='Enter your key first.', text_color='#FF5555')
+            return
+        self.activate_btn.configure(state='disabled')
+        self.key_status.configure(
+            text='Checking key... (the server can take up to a minute to wake up)',
+            text_color='#AAAAAA'
+        )
+
+        def run():
+            ok, msg = verify_key(key)
+            self.after(0, lambda: self.on_activation(ok, msg, key))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def on_activation(self, ok, msg, key):
+        self.activate_btn.configure(state='normal')
+        if ok:
+            save_key(key)
+            self.continue_to_app()
+        else:
+            self.key_status.configure(text=msg, text_color='#FF5555')
 
     def continue_to_app(self):
         self.login_overlay.place_forget()
