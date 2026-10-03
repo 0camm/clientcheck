@@ -1,4 +1,4 @@
-name: Build ClientCheck exe
+name: Build Sentinel exe
 
 on:
   push:
@@ -18,9 +18,9 @@ jobs:
         run: pip install customtkinter psutil pyinstaller
 
       - name: Build exe
-        run: pyinstaller --noconfirm --onefile --windowed --uac-admin --name ClientCheck --collect-all customtkinter ClientCheck.py
+        run: pyinstaller --noconfirm --onefile --windowed --uac-admin --name Sentinel --collect-all customtkinter Sentinel.py
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ClientCheck-exe
-          path: dist/ClientCheck.exe
+          name: Sentinel-exe
+          path: dist/Sentinel.exe
