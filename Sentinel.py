@@ -20,7 +20,7 @@ import customtkinter as ctk
 
 PC_NAME = socket.gethostname()
 
-API_BASE = 'https://ccskeys.onrender.com'  # your Render key server
+API_BASE = 'https://sentinalkeys.onrender.com'  # your Render key server
 DISCORD_URL = 'https://discord.gg/XxqjtYDrrV'
 LICENSE_DIR = os.path.join(
     os.getenv('APPDATA') or os.path.expanduser('~'), 'Sentinel'
