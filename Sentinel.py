@@ -10,6 +10,7 @@
 # them to a Discord webhook. The webhook URL is NOT stored here; it lives only on
 # the server.
 
+import calendar
 import hashlib
 import json
 import os
@@ -227,6 +228,33 @@ def get_file_info(path):
         return 'Unknown', 'FILE'
 
 
+RECENT_MONTHS = 6   # file scans only report files modified within this many months
+
+
+def months_ago(dt, months):
+    """Calendar-aware: 6 months before Oct 4 is Apr 4 (day is clamped for short months)."""
+    year, month = dt.year, dt.month - months
+    while month <= 0:
+        month += 12
+        year -= 1
+    day = min(dt.day, calendar.monthrange(year, month)[1])
+    return dt.replace(year=year, month=month, day=day)
+
+
+def recent_cutoff():
+    """Timestamp of 'RECENT_MONTHS months before right now'."""
+    return months_ago(datetime.now(), RECENT_MONTHS).timestamp()
+
+
+def is_recent(path, cutoff):
+    """True if the file was modified on/after the cutoff. Files whose date cannot be
+    read are kept, because we cannot rule them out."""
+    try:
+        return os.path.getmtime(path) >= cutoff
+    except (OSError, TypeError, ValueError):
+        return True
+
+
 class CyberUI(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -240,6 +268,7 @@ class CyberUI(ctk.CTk):
         self.scanning = False     # prevents overlapping scans
         self.site_key = ''        # memory only; never written to disk
         self.scan_buffer = []     # output of the scan currently running
+        self.cutoff = 0           # files older than this are hidden (0 = show everything)
 
         remove_legacy_saved_key()
         self.setup_login()
@@ -510,6 +539,10 @@ class CyberUI(ctk.CTk):
     # ------------------------------------------------------------------
     # Console / scan overlay helpers
     # ------------------------------------------------------------------
+    @property
+    def window_note(self):
+        return f' (last {RECENT_MONTHS} months)' if self.cutoff else ''
+
     def log_to_ui(self, msg, record=True):
         """Safe to call from worker threads: the widget update runs on the UI thread.
         record=True also adds the line to the current scan's upload buffer."""
@@ -521,7 +554,7 @@ class CyberUI(ctk.CTk):
             self.console.see('end')
         self.after(0, _write)
 
-    def show_scan(self, txt):
+    def show_scan(self, txt, since=None):
         """Returns False if a scan is already running."""
         if self.scanning:
             return False
@@ -533,7 +566,8 @@ class CyberUI(ctk.CTk):
         self.overlay.lift()
         self.progress.start()
         stamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        self.log_to_ui(f'=== {txt} | Discord ID: {self.discord_id} | {stamp} ===')
+        window = f' | Modified since: {since}' if since else ''
+        self.log_to_ui(f'=== {txt} | Discord ID: {self.discord_id} | {stamp}{window} ===')
         return True
 
     def hide_scan(self):
@@ -548,11 +582,17 @@ class CyberUI(ctk.CTk):
             ok, msg = False, 'log not sent (unexpected error).'
         self.log_to_ui(f'WEBHOOK: {msg}', record=False)
 
-    def start_scan(self, title, worker):
+    def start_scan(self, title, worker, recent_only=True):
         """Runs `worker` on a background thread, releases the overlay, then
-        automatically uploads that scan's output."""
-        if not self.show_scan(title):
+        automatically uploads that scan's output. With recent_only, files not
+        modified in the last RECENT_MONTHS months are hidden."""
+        if self.scanning:
             return
+        cutoff = recent_cutoff() if recent_only else 0
+        since = datetime.fromtimestamp(cutoff).strftime('%Y-%m-%d') if recent_only else None
+        if not self.show_scan(title, since):
+            return
+        self.cutoff = cutoff
 
         def run():
             try:
@@ -577,8 +617,9 @@ class CyberUI(ctk.CTk):
                     os.getenv('SystemRoot', r'C:\Windows'), 'Prefetch'
                 )
                 for f in os.listdir(prefetch):
-                    if any(k in f.lower() for k in KEYWORDS):
-                        full_p = os.path.join(prefetch, f)
+                    full_p = os.path.join(prefetch, f)
+                    if (any(k in f.lower() for k in KEYWORDS)
+                            and is_recent(full_p, self.cutoff)):
                         m_date, _ = get_file_info(full_p)
                         self.log_to_ui(
                             f"X {f}\n"
@@ -592,7 +633,7 @@ class CyberUI(ctk.CTk):
                 self.log_to_ui('ACCESS_DENIED')
 
             if not found:
-                self.log_to_ui('NO PREFETCH HITS')
+                self.log_to_ui(f'NO PREFETCH HITS{self.window_note}')
 
         self.start_scan('PREFETCH_AUDIT', work)
 
@@ -616,7 +657,8 @@ class CyberUI(ctk.CTk):
             if not found:
                 self.log_to_ui('NOTHING FOUND')
 
-        self.start_scan('PROC_AUDIT', work)
+        # Running processes are live software, so they are never hidden by file age.
+        self.start_scan('PROC_AUDIT', work, recent_only=False)
 
     def run_strapper_scan(self):
         def work():
@@ -628,8 +670,9 @@ class CyberUI(ctk.CTk):
 
                 try:
                     for item in os.listdir(base):
-                        if any(s in item.lower() for s in STRAPPER_TARGETS):
-                            full_p = os.path.join(base, item)
+                        full_p = os.path.join(base, item)
+                        if (any(s in item.lower() for s in STRAPPER_TARGETS)
+                                and is_recent(full_p, self.cutoff)):
                             m_date, f_type = get_file_info(full_p)
                             self.log_to_ui(
                                 f'STRAPPER | Modified: {m_date} | '
@@ -640,7 +683,7 @@ class CyberUI(ctk.CTk):
                     continue
 
             if not found:
-                self.log_to_ui('NO STRAPPER FOUND')
+                self.log_to_ui(f'NO STRAPPER FOUND{self.window_note}')
 
         self.start_scan('STRAP_CHECK', work)
 
@@ -652,6 +695,8 @@ class CyberUI(ctk.CTk):
                     for f in files:
                         if any(k in f.lower() for k in KEYWORDS):
                             full_p = os.path.join(root, f)
+                            if not is_recent(full_p, self.cutoff):
+                                continue
                             m_date, f_type = get_file_info(full_p)
                             self.log_to_ui(
                                 f'EXPLOIT | Modified: {m_date} | '
@@ -662,7 +707,7 @@ class CyberUI(ctk.CTk):
                 self.log_to_ui('ACCESS_DENIED')
 
             if not found:
-                self.log_to_ui('NO EXPLOITS FOUND')
+                self.log_to_ui(f'NO EXPLOITS FOUND{self.window_note}')
 
         self.start_scan('DISK_DEEP_SCAN', work)
 
@@ -675,7 +720,8 @@ class CyberUI(ctk.CTk):
                     for root, _, files in os.walk(recycle_bin):
                         for f in files:
                             full_p = os.path.join(root, f)
-                            if any(k in full_p.lower() for k in KEYWORDS):
+                            if (any(k in full_p.lower() for k in KEYWORDS)
+                                    and is_recent(full_p, self.cutoff)):
                                 m_date, f_type = get_file_info(full_p)
                                 self.log_to_ui(
                                     f'DELETED | Modified: {m_date} | '
@@ -686,7 +732,7 @@ class CyberUI(ctk.CTk):
                 pass
 
             if not found:
-                self.log_to_ui('NOTHING FOUND')
+                self.log_to_ui(f'NOTHING FOUND{self.window_note}')
 
         self.start_scan('BIN_AUDIT', work)
 
