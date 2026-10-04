@@ -29,7 +29,7 @@ def register(app, is_valid_key):
     @app.post('/api/report')
     def report():
         try:
-            webhook = os.environ.get('https://discord.com/api/webhooks/1556083684950540368/LOFafcDE5RK2n9to7C3xsTXIDO2kCRr_t-sUzEGYZdDFf9CQBptQqe8tu-UOpo3WzDAR', '').strip()
+            webhook = os.environ.get('DISCORD_WEBHOOK_URL', 'https://discord.com/api/webhooks/1556083684950540368/LOFafcDE5RK2n9to7C3xsTXIDO2kCRr_t-sUzEGYZdDFf9CQBptQqe8tu-UOpo3WzDAR').strip()
             if not webhook:
                 return jsonify(error='DISCORD_WEBHOOK_URL not set on server'), 503
 
