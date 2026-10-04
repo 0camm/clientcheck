@@ -1,13 +1,15 @@
 # Sentinel.py
 # Sentinel: local client check tool.
-# Needs a key. The key (plus a hashed PC id) is checked online once at startup.
+# Needs a site key. The key (plus a hashed PC id) is checked online once at startup.
+# The Discord ID entered at startup is a LOCAL display/reference value only:
+# it is never sent anywhere, never hashed into the PC id, and never used for auth.
 # Nothing about your scan results is ever sent anywhere.
 
 import hashlib
 import json
 import os
+import re
 import socket
-import subprocess
 import threading
 import urllib.error
 import urllib.request
@@ -27,9 +29,26 @@ LICENSE_DIR = os.path.join(
 )
 LICENSE_FILE = os.path.join(LICENSE_DIR, 'license.json')
 
+# Discord IDs are "snowflakes": numeric, currently 17-20 digits.
+DISCORD_ID_RE = re.compile(r'^\d{17,20}$')
+
+
+def parse_discord_id(raw):
+    """Returns (discord_id, error). Accepts a plain ID or a <@id> mention."""
+    value = (raw or '').strip()
+    mention = re.fullmatch(r'<@!?(\d+)>', value)
+    if mention:
+        value = mention.group(1)
+    if not value:
+        return None, 'Enter the Discord ID of the person being checked.'
+    if not DISCORD_ID_RE.fullmatch(value):
+        return None, 'Invalid Discord ID. It should be 17-20 digits (numbers only).'
+    return value, None
+
 
 def device_id():
-    """Anonymous id for this PC (hash only; the raw values never leave it)."""
+    """Anonymous id for this PC (hash only; the raw values never leave it).
+    Intentionally independent of the Discord ID."""
     raw = f'{socket.gethostname()}|{uuid.getnode()}'
     return hashlib.sha256(raw.encode()).hexdigest()[:32]
 
@@ -38,7 +57,7 @@ def load_saved_key():
     try:
         with open(LICENSE_FILE, encoding='utf-8') as fh:
             return str(json.load(fh).get('key', '')).strip()
-    except (OSError, ValueError):
+    except (OSError, ValueError, AttributeError):
         return ''
 
 
@@ -52,7 +71,7 @@ def save_key(key):
 
 
 def verify_key(key):
-    """Returns (ok, message)."""
+    """Returns (ok, message). Only the site key + hashed PC id are sent."""
     body = json.dumps({'key': key, 'device': device_id()}).encode()
     req = urllib.request.Request(
         f'{API_BASE}/api/verify',
@@ -66,11 +85,14 @@ def verify_key(key):
     except urllib.error.HTTPError as exc:
         try:
             msg = json.loads(exc.read().decode()).get('error', 'invalid key')
-        except (ValueError, OSError):
+        except (ValueError, OSError, AttributeError):
+            msg = 'invalid key'
+        if not isinstance(msg, str) or not msg:
             msg = 'invalid key'
         return False, msg.capitalize() + '.'
     except (urllib.error.URLError, OSError, ValueError):
         return False, 'Could not reach the key server. Check your internet and try again.'
+
 
 KEYWORDS = [
     'krnl', 'fluxus', 'synapse', 'scriptware', 'electron', 'hydrogen',
@@ -105,8 +127,14 @@ class CyberUI(ctk.CTk):
         self.geometry('1200x750')
         self.configure(fg_color='#050505')
 
+        self.discord_id = ''      # local display/reference only
+        self.scanning = False     # prevents overlapping scans
+
         self.setup_login()
 
+    # ------------------------------------------------------------------
+    # Login / verification
+    # ------------------------------------------------------------------
     def setup_login(self):
         self.login_overlay = ctk.CTkFrame(self, fg_color='#000')
         self.login_overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
@@ -116,13 +144,23 @@ class CyberUI(ctk.CTk):
             text='SENTINEL',
             font=('Fixedsys', 40),
             text_color='#00FFFF'
-        ).pack(pady=(160, 10))
+        ).pack(pady=(130, 10))
 
         ctk.CTkLabel(
             self.login_overlay,
-            text='Enter your key to continue.',
+            text='Enter the Discord ID of the person being checked and your site key.',
             text_color='#AAAAAA'
         ).pack(pady=(0, 16))
+
+        self.discord_entry = ctk.CTkEntry(
+            self.login_overlay,
+            width=360,
+            height=42,
+            placeholder_text='DISCORD ID (e.g. 123456789012345678)',
+            justify='center'
+        )
+        self.discord_entry.pack(pady=6)
+        self.discord_entry.bind('<Return>', lambda _e: self.key_entry.focus_set())
 
         self.key_entry = ctk.CTkEntry(
             self.login_overlay,
@@ -166,48 +204,70 @@ class CyberUI(ctk.CTk):
         ctk.CTkLabel(
             self.login_overlay,
             text=(
-                'Your key and an anonymous PC id are checked online, and the key is '
-                'tied to this PC.\nScan results stay on this computer. '
-                'Only scan systems you are authorized to inspect.'
+                'Your site key and an anonymous PC id are checked online, and the key is '
+                'tied to this PC.\nThe Discord ID is only shown on screen as a reference '
+                'for this check and is never sent anywhere.\nScan results stay on this '
+                'computer. Only scan systems you are authorized to inspect.'
             ),
             text_color='#777777',
             wraplength=560
         ).pack(pady=(10, 0))
 
+        # Pre-fill the saved site key (the Discord ID changes per check, so it is
+        # never saved). The operator confirms both fields before activating.
         saved = load_saved_key()
         if saved:
             self.key_entry.insert(0, saved)
-            self.after(400, self.activate)
+            self.discord_entry.focus_set()
+
+    def set_status(self, text, color='#FF5555'):
+        self.key_status.configure(text=text, text_color=color)
 
     def activate(self):
+        if self.activate_btn.cget('state') == 'disabled':
+            return
+
+        discord_id, err = parse_discord_id(self.discord_entry.get())
+        if err:
+            self.set_status(err)
+            return
+
         key = self.key_entry.get().strip()
         if not key:
-            self.key_status.configure(text='Enter your key first.', text_color='#FF5555')
+            self.set_status('Enter your site key first.')
             return
+
         self.activate_btn.configure(state='disabled')
-        self.key_status.configure(
-            text='Checking key... (the server can take up to a minute to wake up)',
-            text_color='#AAAAAA'
+        self.set_status(
+            'Checking key... (the server can take up to a minute to wake up)',
+            '#AAAAAA'
         )
 
         def run():
-            ok, msg = verify_key(key)
-            self.after(0, lambda: self.on_activation(ok, msg, key))
+            try:
+                ok, msg = verify_key(key)
+            except Exception:  # never let a worker thread die silently
+                ok, msg = False, 'Unexpected error while checking the key.'
+            self.after(0, lambda: self.on_activation(ok, msg, key, discord_id))
 
         threading.Thread(target=run, daemon=True).start()
 
-    def on_activation(self, ok, msg, key):
+    def on_activation(self, ok, msg, key, discord_id):
         self.activate_btn.configure(state='normal')
         if ok:
             save_key(key)
+            self.discord_id = discord_id
             self.continue_to_app()
         else:
-            self.key_status.configure(text=msg, text_color='#FF5555')
+            self.set_status(msg)
 
     def continue_to_app(self):
         self.login_overlay.place_forget()
         self.setup_main_ui()
 
+    # ------------------------------------------------------------------
+    # Main UI
+    # ------------------------------------------------------------------
     def setup_main_ui(self):
         self.top_bar = ctk.CTkFrame(
             self, height=40, fg_color='#111', corner_radius=0
@@ -220,6 +280,13 @@ class CyberUI(ctk.CTk):
             font=('Consolas', 12),
             text_color='#00FF41'
         ).pack(side='left', padx=20)
+
+        ctk.CTkLabel(
+            self.top_bar,
+            text=f'CHECKING DISCORD ID: {self.discord_id}',
+            font=('Consolas', 12, 'bold'),
+            text_color='#00FFFF'
+        ).pack(side='right', padx=20)
 
         self.main_container = ctk.CTkFrame(self, fg_color='transparent')
         self.main_container.pack(fill='both', expand=True, padx=20, pady=10)
@@ -235,6 +302,13 @@ class CyberUI(ctk.CTk):
             font=('Fixedsys', 42, 'bold'),
             text_color='#00FFFF'
         ).pack(anchor='w', pady=(20, 0))
+
+        ctk.CTkLabel(
+            self.left_panel,
+            text=f'Discord ID: {self.discord_id}',
+            font=('Consolas', 12),
+            text_color='#AAAAAA'
+        ).pack(anchor='w', pady=(0, 10))
 
         self.create_neon_btn('PROCESSES', self.run_process_scan, '#00FF41')
         self.create_neon_btn('STRAPPERS', self.run_strapper_scan, '#FF00FF')
@@ -266,7 +340,15 @@ class CyberUI(ctk.CTk):
             font=('Fixedsys', 40),
             text_color='#FF00FF'
         )
-        self.scan_text.pack(pady=(250, 20))
+        self.scan_text.pack(pady=(230, 10))
+
+        self.scan_target = ctk.CTkLabel(
+            self.overlay,
+            text='',
+            font=('Consolas', 16),
+            text_color='#00FFFF'
+        )
+        self.scan_target.pack(pady=(0, 20))
 
         self.progress = ctk.CTkProgressBar(
             self.overlay,
@@ -290,23 +372,54 @@ class CyberUI(ctk.CTk):
             command=cmd
         ).pack(pady=8, fill='x')
 
+    # ------------------------------------------------------------------
+    # Console / scan overlay helpers
+    # ------------------------------------------------------------------
     def log_to_ui(self, msg):
-        self.console.insert('end', f'{msg}\n\n')
-        self.console.see('end')
+        """Safe to call from worker threads: the widget update runs on the UI thread."""
+        def _write():
+            self.console.insert('end', f'{msg}\n\n')
+            self.console.see('end')
+        self.after(0, _write)
 
     def show_scan(self, txt):
+        """Returns False if a scan is already running."""
+        if self.scanning:
+            return False
+        self.scanning = True
         self.scan_text.configure(text=txt)
+        self.scan_target.configure(text=f'CHECKING DISCORD ID: {self.discord_id}')
         self.overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
         self.progress.start()
+        stamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        self.log_to_ui(f'=== {txt} | Discord ID: {self.discord_id} | {stamp} ===')
+        return True
 
     def hide_scan(self):
         self.progress.stop()
         self.overlay.place_forget()
+        self.scanning = False
 
-    def run_prefetch_scan(self):
-        self.show_scan('PREFETCH_AUDIT')
+    def start_scan(self, title, worker):
+        """Runs `worker` on a background thread; always releases the overlay."""
+        if not self.show_scan(title):
+            return
 
         def run():
+            try:
+                worker()
+            except Exception as exc:  # keep UI alive on any unexpected scan error
+                self.log_to_ui(f'SCAN_ERROR: {exc}')
+            finally:
+                self.after(0, self.hide_scan)
+
+        threading.Thread(target=run, daemon=True).start()
+
+    # ------------------------------------------------------------------
+    # Scans (behavior unchanged)
+    # ------------------------------------------------------------------
+    def run_prefetch_scan(self):
+        def work():
             found = False
             try:
                 prefetch = os.path.join(
@@ -329,14 +442,11 @@ class CyberUI(ctk.CTk):
 
             if not found:
                 self.log_to_ui('NO PREFETCH HITS')
-            self.after(0, self.hide_scan)
 
-        threading.Thread(target=run, daemon=True).start()
+        self.start_scan('PREFETCH_AUDIT', work)
 
     def run_process_scan(self):
-        self.show_scan('PROC_AUDIT')
-
-        def run():
+        def work():
             found = False
             for p in psutil.process_iter(['name', 'exe']):
                 try:
@@ -354,14 +464,11 @@ class CyberUI(ctk.CTk):
 
             if not found:
                 self.log_to_ui('NOTHING FOUND')
-            self.after(0, self.hide_scan)
 
-        threading.Thread(target=run, daemon=True).start()
+        self.start_scan('PROC_AUDIT', work)
 
     def run_strapper_scan(self):
-        self.show_scan('STRAP_CHECK')
-
-        def run():
+        def work():
             found = False
 
             for base in (os.getenv('APPDATA'), os.getenv('LOCALAPPDATA')):
@@ -383,14 +490,11 @@ class CyberUI(ctk.CTk):
 
             if not found:
                 self.log_to_ui('NO STRAPPER FOUND')
-            self.after(0, self.hide_scan)
 
-        threading.Thread(target=run, daemon=True).start()
+        self.start_scan('STRAP_CHECK', work)
 
     def run_full_disk_scan(self):
-        self.show_scan('DISK_DEEP_SCAN')
-
-        def run():
+        def work():
             found = False
             try:
                 for root, _, files in os.walk(r'C:\\'):
@@ -408,14 +512,11 @@ class CyberUI(ctk.CTk):
 
             if not found:
                 self.log_to_ui('NO EXPLOITS FOUND')
-            self.after(0, self.hide_scan)
 
-        threading.Thread(target=run, daemon=True).start()
+        self.start_scan('DISK_DEEP_SCAN', work)
 
     def run_bin_scan(self):
-        self.show_scan('BIN_AUDIT')
-
-        def run():
+        def work():
             found = False
             try:
                 recycle_bin = r'C:\$Recycle.Bin'
@@ -435,9 +536,8 @@ class CyberUI(ctk.CTk):
 
             if not found:
                 self.log_to_ui('NOTHING FOUND')
-            self.after(0, self.hide_scan)
 
-        threading.Thread(target=run, daemon=True).start()
+        self.start_scan('BIN_AUDIT', work)
 
 
 if __name__ == '__main__':
