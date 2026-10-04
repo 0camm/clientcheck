@@ -185,7 +185,9 @@ def send_report(key, discord_id, scan, log_text):
         except urllib.error.HTTPError as exc:
             msg = _http_error_message(exc, 'rejected')
             last = f'log not sent (HTTP {exc.code}: {msg}).'
-            if exc.code == 413 and not trimmed:
+            # Too-large bodies are rejected by the server's JSON parser. Some servers
+            # report that as 413, others turn it into a 500, so treat both the same.
+            if exc.code in (413, 500) and len(body) > SAFE_BODY_BYTES and not trimmed:
                 body = _shrink_log(key, discord_id, scan, log_text)
                 trimmed = True
                 continue                # re-send smaller; does not use up an attempt
