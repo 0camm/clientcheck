@@ -7,7 +7,7 @@
 <meta name="description" content="Official download index for Sentinel. Releases with published checksums.">
 
 <!-- Security hardening (client-side; pair with real HTTP headers on your host for full effect) -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' https://raw.githubusercontent.com data:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests">
 <meta http-equiv="X-Content-Type-Options" content="nosniff">
 <meta name="referrer" content="strict-origin-when-cross-origin">
 <meta name="color-scheme" content="dark">
@@ -20,31 +20,31 @@
 <meta name="twitter:image" content="https://raw.githubusercontent.com/0camm/sentinel/main/Sentinel.png">
 <meta name="twitter:image:alt" content="Sentinel logo">
 
-<!-- Open Graph (Facebook/Discord/etc. embeds) -->
+<!-- Open Graph (link previews) -->
 <meta property="og:type" content="website">
 <meta property="og:title" content="Sentinel — File Downloads">
 <meta property="og:description" content="Official download index for Sentinel. Releases with published checksums.">
 <meta property="og:image" content="https://raw.githubusercontent.com/0camm/sentinel/main/Sentinel.png">
 <meta property="og:site_name" content="Sentinel">
 
-<link rel="icon" type="image/png" href="https://raw.githubusercontent.com/0camm/sentinel/main/Sentinel.png">
-<link rel="apple-touch-icon" href="https://raw.githubusercontent.com/0camm/sentinel/main/Sentinel.png">
+<link rel="icon" type="image/png" href="favicon.png">
+<link rel="apple-touch-icon" href="favicon.png">
 
 <style>
   :root {
     --bg: #000000;
-    --panel: #0a0a0b;
-    --panel-2: #101012;
-    --line: #232326;
-    --line-soft: #18181a;
-    --text: #f2f3f5;
-    --muted: #8f9096;
-    --muted-2: #c1c2c7;
+    --panel: #0a0a0a;
+    --panel-2: #141414;
+    --line: #2a2a2a;
+    --line-soft: #1c1c1c;
+    --text: #ffffff;
+    --muted: #8a8a8a;
+    --muted-2: #c4c4c4;
     --accent: #ffffff;
-    --accent-dim: #19191b;
+    --accent-dim: #1a1a1a;
     --focus: #ffffff;
-    --radius-lg: 22px;
-    --radius-md: 14px;
+    --radius-lg: 14px;
+    --radius-md: 10px;
     --radius-sm: 999px;
   }
 
@@ -58,7 +58,6 @@
   body {
     margin: 0;
     background: var(--bg);
-    background-image: radial-gradient(700px 400px at 15% -10%, rgba(255, 255, 255, 0.05), transparent 60%);
     color: var(--text);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
     line-height: 1.55;
@@ -82,7 +81,7 @@
     left: -9999px;
     top: 0;
     background: var(--accent);
-    color: #06070a;
+    color: #000000;
     padding: 10px 16px;
     border-radius: 0 0 8px 0;
     font-size: 13px;
@@ -101,26 +100,23 @@
     justify-content: space-between;
     gap: 12px;
     padding: 14px max(20px, env(safe-area-inset-left)) 14px max(20px, env(safe-area-inset-right));
-    background: rgba(0, 0, 0, 0.85);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
+    background: #000000;
     border-bottom: 1px solid var(--line-soft);
   }
 
   .brand {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 12px;
     min-width: 0;
     text-decoration: none;
   }
 
   .brand-logo {
-    width: 30px;
-    height: 30px;
-    border-radius: 50%;
-    object-fit: cover;
-    border: 1px solid var(--line);
+    width: 28px;
+    height: 28px;
+    object-fit: contain;
+    display: block;
     flex-shrink: 0;
   }
 
@@ -133,29 +129,11 @@
     text-overflow: ellipsis;
   }
 
-  .topbar-link {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--muted-2);
-    text-decoration: none;
-    padding: 7px 12px;
-    border: 1px solid var(--line);
-    border-radius: var(--radius-sm);
-    transition: color 0.15s ease, border-color 0.15s ease;
-    flex-shrink: 0;
-  }
-
-  .topbar-link:hover { color: var(--text); border-color: #3a3a3d; }
-  .topbar-link svg { width: 14px; height: 14px; flex-shrink: 0; }
-
   /* ---------- Page / hero ---------- */
   .page {
     max-width: 720px;
     margin: 0 auto;
-    padding: 56px max(20px, env(safe-area-inset-left)) 100px max(20px, env(safe-area-inset-right));
+    padding: 64px max(20px, env(safe-area-inset-left)) 100px max(20px, env(safe-area-inset-right));
   }
 
   .hero-badge {
@@ -232,7 +210,7 @@
     transition: transform 0.25s cubic-bezier(0.22, 1, 0.36, 1);
   }
 
-  .tab-btn.active { color: #06070a; }
+  .tab-btn.active { color: #000000; }
   .tab-btn:not(.active):hover { color: var(--muted-2); }
 
   @media (prefers-reduced-motion: reduce) {
@@ -270,10 +248,10 @@
     background: var(--panel);
     border: 1px solid var(--line-soft);
     border-radius: var(--radius-lg);
-    transition: border-color 0.15s ease;
+    transition: border-color 0.2s ease, background-color 0.2s ease;
   }
 
-  .file-row:hover { border-color: #333336; }
+  .file-row:hover { border-color: #4a4a4a; background: #0f0f0f; }
 
   .file-left {
     display: flex;
@@ -361,7 +339,7 @@
     min-height: 42px;
     padding: 0 18px;
     background: var(--text);
-    color: #06070a;
+    color: #000000;
     border: 1px solid var(--text);
     border-radius: var(--radius-sm);
     font: inherit;
@@ -369,10 +347,10 @@
     font-weight: 700;
     text-decoration: none;
     cursor: pointer;
-    transition: opacity 0.15s ease, transform 0.1s ease;
+    transition: background-color 0.15s ease, transform 0.1s ease;
   }
 
-  .download-btn:hover { opacity: 0.85; }
+  .download-btn:hover { background: #d9d9d9; }
   .download-btn:active { transform: scale(0.97); }
   .download-btn svg { width: 14px; height: 14px; flex-shrink: 0; }
 
@@ -437,38 +415,6 @@
     color: var(--muted-2);
     font-size: 14px;
   }
-
-  .discord-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-    flex-wrap: wrap;
-  }
-
-  .discord-left {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    min-width: 0;
-  }
-
-  .discord-icon {
-    flex-shrink: 0;
-    width: 42px;
-    height: 42px;
-    border-radius: 50%;
-    background: var(--panel-2);
-    border: 1px solid var(--line);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .discord-icon svg { width: 20px; height: 20px; fill: var(--text); }
-
-  .discord-title { font-size: 15px; font-weight: 600; margin: 0 0 3px; }
-  .discord-sub { margin: 0; color: var(--muted); font-size: 13px; }
 
   .credits-list {
     display: flex;
@@ -591,13 +537,14 @@
     font-weight: 700;
     cursor: pointer;
     border: 1px solid var(--line);
-    transition: opacity 0.15s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease;
   }
 
-  .modal-actions button:hover { opacity: 0.85; }
+  .modal-actions button:hover { border-color: #4a4a4a; }
+  .modal-actions .btn-confirm:hover { background: #d9d9d9; }
 
   .btn-cancel { background: transparent; color: var(--text); }
-  .btn-confirm { background: var(--text); color: #06070a; border-color: var(--text); }
+  .btn-confirm { background: var(--text); color: #000000; border-color: var(--text); }
 
   /* ---------- Responsive ---------- */
   @media (max-width: 560px) {
@@ -606,30 +553,20 @@
     .file-row { flex-direction: column; align-items: stretch; }
     .file-left { width: 100%; }
     .download-btn { width: 100%; }
-    .discord-row { flex-direction: column; align-items: stretch; }
-    .discord-row .download-btn { width: 100%; }
     .credit-row { flex-direction: column; align-items: flex-start; gap: 8px; }
     .credit-handle { align-self: flex-start; }
     footer { flex-direction: column; }
   }
 
-  @media (max-width: 380px) {
-    .topbar-link span { display: none; }
-    .topbar-link { padding: 8px; }
-  }
 </style>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
 
   <div class="topbar">
-    <a class="brand" href="#main">
-      <img class="brand-logo" src="https://raw.githubusercontent.com/0camm/sentinel/main/Sentinel.png" alt="" width="30" height="30">
+    <a class="brand" href="#main" aria-label="Sentinel home">
+      <img class="brand-logo" src="Sentinel.png" alt="" width="28" height="28">
       <span class="brand-name">Sentinel</span>
-    </a>
-    <a class="topbar-link" href="https://discord.gg/XxqjtYDrrV" target="_blank" rel="noopener noreferrer">
-      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20.317 4.369a19.79 19.79 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.369a.07.07 0 0 0-.032.027C.533 9.09-.32 13.68.099 18.213a.082.082 0 0 0 .031.056 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.893.077.077 0 0 1-.008-.128c.126-.094.252-.192.372-.291a.074.074 0 0 1 .077-.01c3.927 1.793 8.18 1.793 12.061 0a.073.073 0 0 1 .078.009c.12.099.246.198.373.292a.077.077 0 0 1-.006.128c-.598.35-1.22.645-1.873.893a.076.076 0 0 0-.04.106c.36.698.772 1.363 1.225 1.993a.076.076 0 0 0 .084.029 19.84 19.84 0 0 0 6.002-3.03.077.077 0 0 0 .032-.055c.5-5.244-.838-9.795-3.549-13.817a.061.061 0 0 0-.031-.028zM8.02 15.331c-1.182 0-2.157-1.086-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.211 0 2.177 1.096 2.157 2.419 0 1.333-.955 2.419-2.157 2.419zm7.974 0c-1.183 0-2.157-1.086-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.419 0 1.333-.946 2.419-2.157 2.419z"/></svg>
-      <span>Discord</span>
     </a>
   </div>
 
@@ -661,24 +598,6 @@
         <p class="info-label">About</p>
         <div class="info-card">
           <p>This site is a simple file index for hosting and sharing our downloads. It's meant to be a clean, no-nonsense place to grab the latest files, with more information about the project available right here on this page.</p>
-        </div>
-      </div>
-
-      <div class="info-section">
-        <p class="info-label">Discord</p>
-        <div class="info-card">
-          <div class="discord-row">
-            <div class="discord-left">
-              <div class="discord-icon">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.317 4.369a19.79 19.79 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.369a.07.07 0 0 0-.032.027C.533 9.09-.32 13.68.099 18.213a.082.082 0 0 0 .031.056 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.893.077.077 0 0 1-.008-.128c.126-.094.252-.192.372-.291a.074.074 0 0 1 .077-.01c3.927 1.793 8.18 1.793 12.061 0a.073.073 0 0 1 .078.009c.12.099.246.198.373.292a.077.077 0 0 1-.006.128c-.598.35-1.22.645-1.873.893a.076.076 0 0 0-.04.106c.36.698.772 1.363 1.225 1.993a.076.076 0 0 0 .084.029 19.84 19.84 0 0 0 6.002-3.03.077.077 0 0 0 .032-.055c.5-5.244-.838-9.795-3.549-13.817a.061.061 0 0 0-.031-.028zM8.02 15.331c-1.182 0-2.157-1.086-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.211 0 2.177 1.096 2.157 2.419 0 1.333-.955 2.419-2.157 2.419zm7.974 0c-1.183 0-2.157-1.086-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.419 0 1.333-.946 2.419-2.157 2.419z"/></svg>
-              </div>
-              <div>
-                <p class="discord-title">Join our Discord</p>
-                <p class="discord-sub">Updates, support, and community discussion.</p>
-              </div>
-            </div>
-            <a class="download-btn" href="https://discord.gg/XxqjtYDrrV" target="_blank" rel="noopener noreferrer">Join server</a>
-          </div>
         </div>
       </div>
 
