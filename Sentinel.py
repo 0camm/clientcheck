@@ -125,19 +125,41 @@ def verify_key(key):
 MAX_REPORT_CHARS = 100_000
 REPORT_ATTEMPTS = 3          # the free Render server may be asleep on the first try
 RETRY_STATUSES = {429, 500, 502, 503, 504}
+SAFE_BODY_BYTES = 9_000      # fallback if the server still has a 10 KB JSON limit
 
 
-def send_report(key, discord_id, scan, log_text):
-    """Posts the console log to the key server. Returns (ok, message).
-    Retries on cold-start / transient failures."""
-    body = json.dumps({
+def _build_report_body(key, discord_id, scan, log_text):
+    return json.dumps({
         'key': key,
         'device': device_id(),
         'discord_id': discord_id,
         'host': PC_NAME,
         'scan': scan,
-        'log': log_text[-MAX_REPORT_CHARS:],
+        'log': log_text,
     }).encode()
+
+
+def _shrink_log(key, discord_id, scan, log_text):
+    """Trims the log (keeping the start and the end) until the JSON body fits
+    under SAFE_BODY_BYTES. Used only when the server answers 413."""
+    note = '\n\n[... middle of log trimmed: server size limit ...]\n\n'
+    keep = len(log_text)
+    while keep > 200:
+        keep = int(keep * 0.7)
+        half = keep // 2
+        trimmed = log_text[:half] + note + log_text[-half:]
+        body = _build_report_body(key, discord_id, scan, trimmed)
+        if len(body) <= SAFE_BODY_BYTES:
+            return body
+    return _build_report_body(key, discord_id, scan, log_text[-200:])
+
+
+def send_report(key, discord_id, scan, log_text):
+    """Posts the console log to the key server. Returns (ok, message).
+    Retries on cold-start / transient failures, and re-sends a trimmed log
+    if the server rejects the full one as too large (HTTP 413)."""
+    log_text = log_text[-MAX_REPORT_CHARS:]
+    body = _build_report_body(key, discord_id, scan, log_text)
     headers = {
         'Content-Type': 'application/json',
         'User-Agent': 'Sentinel/1.0',
@@ -149,24 +171,31 @@ def send_report(key, discord_id, scan, log_text):
     }
 
     last = 'log not sent (unknown error).'
-    for attempt in range(REPORT_ATTEMPTS):
+    trimmed = False
+    attempt = 0
+    while attempt < REPORT_ATTEMPTS:
         req = urllib.request.Request(
             f'{API_BASE}/api/report', data=body, method='POST', headers=headers
         )
         try:
             with urllib.request.urlopen(req, timeout=75) as resp:
                 if resp.status == 200:
-                    return True, 'log sent.'
+                    return True, 'log sent (trimmed to fit the server limit).' if trimmed else 'log sent.'
                 last = f'log not sent (HTTP {resp.status}).'
         except urllib.error.HTTPError as exc:
             msg = _http_error_message(exc, 'rejected')
             last = f'log not sent (HTTP {exc.code}: {msg}).'
+            if exc.code == 413 and not trimmed:
+                body = _shrink_log(key, discord_id, scan, log_text)
+                trimmed = True
+                continue                # re-send smaller; does not use up an attempt
             if exc.code not in RETRY_STATUSES:
-                return False, last      # 400/401/403: retrying will not help
+                return False, last      # 400/401/403/413: retrying will not help
         except (urllib.error.URLError, OSError, ValueError):
             last = 'log not sent (could not reach the server).'
-        if attempt < REPORT_ATTEMPTS - 1:
-            time.sleep(3 * (attempt + 1))
+        attempt += 1
+        if attempt < REPORT_ATTEMPTS:
+            time.sleep(3 * attempt)
     return False, last
 
 
