@@ -3,9 +3,9 @@
 # Needs a site key. The key (plus a hashed PC id) is checked online once at startup.
 # The Discord ID entered at startup is a LOCAL display/reference value only:
 # it is never sent anywhere, never hashed into the PC id, and never used for auth.
-# Scan results stay on this PC unless the operator clicks SEND REPORT, which posts
-# the visible console log to the Sentinel server (it forwards to a Discord webhook).
-# The webhook URL is NOT stored in this file; it lives only on the server.
+# After each scan finishes, that scan's output (the same text shown in the console)
+# is automatically posted to the Sentinel server, which forwards it to a Discord
+# webhook. The webhook URL is NOT stored in this file; it lives only on the server.
 
 import hashlib
 import json
@@ -99,13 +99,14 @@ def verify_key(key):
 MAX_REPORT_CHARS = 100_000
 
 
-def send_report(key, discord_id, log_text):
+def send_report(key, discord_id, scan, log_text):
     """Posts the console log to the key server. Returns (ok, message)."""
     body = json.dumps({
         'key': key,
         'device': device_id(),
         'discord_id': discord_id,
         'host': PC_NAME,
+        'scan': scan,
         'log': log_text[-MAX_REPORT_CHARS:],
     }).encode()
     req = urllib.request.Request(
@@ -116,15 +117,15 @@ def send_report(key, discord_id, log_text):
     )
     try:
         with urllib.request.urlopen(req, timeout=75) as resp:
-            return resp.status == 200, 'Report sent.'
+            return resp.status == 200, 'log sent.'
     except urllib.error.HTTPError as exc:
         try:
-            msg = json.loads(exc.read().decode()).get('error', 'report rejected')
+            msg = json.loads(exc.read().decode()).get('error', 'rejected')
         except (ValueError, OSError, AttributeError):
-            msg = 'report rejected'
-        return False, str(msg).capitalize() + '.'
+            msg = 'rejected'
+        return False, f'log not sent (HTTP {exc.code}: {msg}).'
     except (urllib.error.URLError, OSError, ValueError):
-        return False, 'Could not reach the server. Report not sent.'
+        return False, 'log not sent (could not reach the server).'
 
 
 KEYWORDS = [
@@ -162,8 +163,8 @@ class CyberUI(ctk.CTk):
 
         self.discord_id = ''      # local display/reference only
         self.scanning = False     # prevents overlapping scans
-        self.site_key = ''        # kept in memory for report authorization
-        self.sending = False
+        self.site_key = ''        # kept in memory to authorize log uploads
+        self.scan_buffer = []     # output of the scan currently running
 
         self.setup_login()
 
@@ -242,8 +243,8 @@ class CyberUI(ctk.CTk):
                 'Your site key and an anonymous PC id are checked online, and the key is '
                 'tied to this PC.\nThe Discord ID is only shown on screen as a reference '
                 'for this check and is never sent anywhere.\nScan results stay on this '
-                'computer unless you click SEND REPORT, which sends the console log, the '
-                'Discord ID and the PC name to the Sentinel server.\n'
+                'computer except that each scan\'s output, the Discord ID and the PC name '
+                'are sent automatically to the Sentinel server when a scan finishes.\n'
                 'Only scan systems you are authorized to inspect.'
             ),
             text_color='#777777',
@@ -353,7 +354,6 @@ class CyberUI(ctk.CTk):
         self.create_neon_btn('PREFETCH', self.run_prefetch_scan, '#FFFF00')
         self.create_neon_btn('DELETED FILES', self.run_bin_scan, '#FF8C00')
         self.create_neon_btn('EXPLOIT SCAN', self.run_full_disk_scan, '#00FFFF')
-        self.create_neon_btn('SEND REPORT', self.send_report_clicked, '#FFFFFF')
 
         self.right_panel = ctk.CTkFrame(
             self.main_container,
@@ -414,8 +414,12 @@ class CyberUI(ctk.CTk):
     # ------------------------------------------------------------------
     # Console / scan overlay helpers
     # ------------------------------------------------------------------
-    def log_to_ui(self, msg):
-        """Safe to call from worker threads: the widget update runs on the UI thread."""
+    def log_to_ui(self, msg, record=True):
+        """Safe to call from worker threads: the widget update runs on the UI thread.
+        record=True also adds the line to the current scan's upload buffer."""
+        if record:
+            self.scan_buffer.append(str(msg))
+
         def _write():
             self.console.insert('end', f'{msg}\n\n')
             self.console.see('end')
@@ -426,6 +430,7 @@ class CyberUI(ctk.CTk):
         if self.scanning:
             return False
         self.scanning = True
+        self.scan_buffer = []
         self.scan_text.configure(text=txt)
         self.scan_target.configure(text=f'CHECKING DISCORD ID: {self.discord_id}')
         self.overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
@@ -439,28 +444,16 @@ class CyberUI(ctk.CTk):
         self.overlay.place_forget()
         self.scanning = False
 
-    def send_report_clicked(self):
-        if self.sending or self.scanning:
-            return
-        log_text = self.console.get('1.0', 'end').strip()
-        if not log_text:
-            self.log_to_ui('REPORT: nothing to send yet. Run a scan first.')
-            return
-        self.sending = True
-        self.log_to_ui('REPORT: sending...')
-
-        def run():
-            try:
-                ok, msg = send_report(self.site_key, self.discord_id, log_text)
-            except Exception:
-                ok, msg = False, 'Unexpected error. Report not sent.'
-            self.log_to_ui(f'REPORT: {msg}')
-            self.after(0, lambda: setattr(self, 'sending', False))
-
-        threading.Thread(target=run, daemon=True).start()
+    def send_log(self, title, text):
+        try:
+            ok, msg = send_report(self.site_key, self.discord_id, title, text)
+        except Exception:
+            ok, msg = False, 'log not sent (unexpected error).'
+        self.log_to_ui(f'WEBHOOK: {msg}', record=False)
 
     def start_scan(self, title, worker):
-        """Runs `worker` on a background thread; always releases the overlay."""
+        """Runs `worker` on a background thread, releases the overlay, then
+        automatically uploads that scan's output."""
         if not self.show_scan(title):
             return
 
@@ -470,7 +463,9 @@ class CyberUI(ctk.CTk):
             except Exception as exc:  # keep UI alive on any unexpected scan error
                 self.log_to_ui(f'SCAN_ERROR: {exc}')
             finally:
+                report = '\n\n'.join(self.scan_buffer)
                 self.after(0, self.hide_scan)
+            self.send_log(title, report)
 
         threading.Thread(target=run, daemon=True).start()
 
