@@ -3,7 +3,9 @@
 # Needs a site key. The key (plus a hashed PC id) is checked online once at startup.
 # The Discord ID entered at startup is a LOCAL display/reference value only:
 # it is never sent anywhere, never hashed into the PC id, and never used for auth.
-# Nothing about your scan results is ever sent anywhere.
+# Scan results stay on this PC unless the operator clicks SEND REPORT, which posts
+# the visible console log to the Sentinel server (it forwards to a Discord webhook).
+# The webhook URL is NOT stored in this file; it lives only on the server.
 
 import hashlib
 import json
@@ -94,6 +96,37 @@ def verify_key(key):
         return False, 'Could not reach the key server. Check your internet and try again.'
 
 
+MAX_REPORT_CHARS = 100_000
+
+
+def send_report(key, discord_id, log_text):
+    """Posts the console log to the key server. Returns (ok, message)."""
+    body = json.dumps({
+        'key': key,
+        'device': device_id(),
+        'discord_id': discord_id,
+        'host': PC_NAME,
+        'log': log_text[-MAX_REPORT_CHARS:],
+    }).encode()
+    req = urllib.request.Request(
+        f'{API_BASE}/api/report',
+        data=body,
+        method='POST',
+        headers={'Content-Type': 'application/json', 'User-Agent': 'Sentinel/1.0'},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=75) as resp:
+            return resp.status == 200, 'Report sent.'
+    except urllib.error.HTTPError as exc:
+        try:
+            msg = json.loads(exc.read().decode()).get('error', 'report rejected')
+        except (ValueError, OSError, AttributeError):
+            msg = 'report rejected'
+        return False, str(msg).capitalize() + '.'
+    except (urllib.error.URLError, OSError, ValueError):
+        return False, 'Could not reach the server. Report not sent.'
+
+
 KEYWORDS = [
     'krnl', 'fluxus', 'synapse', 'scriptware', 'electron', 'hydrogen',
     'delta', 'codex', 'arceus', 'vega', 'comet', 'oxygen', 'evon',
@@ -129,6 +162,8 @@ class CyberUI(ctk.CTk):
 
         self.discord_id = ''      # local display/reference only
         self.scanning = False     # prevents overlapping scans
+        self.site_key = ''        # kept in memory for report authorization
+        self.sending = False
 
         self.setup_login()
 
@@ -207,7 +242,9 @@ class CyberUI(ctk.CTk):
                 'Your site key and an anonymous PC id are checked online, and the key is '
                 'tied to this PC.\nThe Discord ID is only shown on screen as a reference '
                 'for this check and is never sent anywhere.\nScan results stay on this '
-                'computer. Only scan systems you are authorized to inspect.'
+                'computer unless you click SEND REPORT, which sends the console log, the '
+                'Discord ID and the PC name to the Sentinel server.\n'
+                'Only scan systems you are authorized to inspect.'
             ),
             text_color='#777777',
             wraplength=560
@@ -256,6 +293,7 @@ class CyberUI(ctk.CTk):
         self.activate_btn.configure(state='normal')
         if ok:
             save_key(key)
+            self.site_key = key
             self.discord_id = discord_id
             self.continue_to_app()
         else:
@@ -315,6 +353,7 @@ class CyberUI(ctk.CTk):
         self.create_neon_btn('PREFETCH', self.run_prefetch_scan, '#FFFF00')
         self.create_neon_btn('DELETED FILES', self.run_bin_scan, '#FF8C00')
         self.create_neon_btn('EXPLOIT SCAN', self.run_full_disk_scan, '#00FFFF')
+        self.create_neon_btn('SEND REPORT', self.send_report_clicked, '#FFFFFF')
 
         self.right_panel = ctk.CTkFrame(
             self.main_container,
@@ -399,6 +438,26 @@ class CyberUI(ctk.CTk):
         self.progress.stop()
         self.overlay.place_forget()
         self.scanning = False
+
+    def send_report_clicked(self):
+        if self.sending or self.scanning:
+            return
+        log_text = self.console.get('1.0', 'end').strip()
+        if not log_text:
+            self.log_to_ui('REPORT: nothing to send yet. Run a scan first.')
+            return
+        self.sending = True
+        self.log_to_ui('REPORT: sending...')
+
+        def run():
+            try:
+                ok, msg = send_report(self.site_key, self.discord_id, log_text)
+            except Exception:
+                ok, msg = False, 'Unexpected error. Report not sent.'
+            self.log_to_ui(f'REPORT: {msg}')
+            self.after(0, lambda: setattr(self, 'sending', False))
+
+        threading.Thread(target=run, daemon=True).start()
 
     def start_scan(self, title, worker):
         """Runs `worker` on a background thread; always releases the overlay."""
