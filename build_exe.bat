@@ -11,9 +11,9 @@ if errorlevel 1 (
   exit /b 1
 )
 
-echo Building ClientCheck.exe...
+echo Building Sentinel.exe...
 py -3 -m PyInstaller --noconfirm --onefile --windowed --uac-admin ^
-  --name ClientCheck --collect-all customtkinter ClientCheck.py
+  --name Sentinel --collect-all customtkinter Sentinel.py
 if errorlevel 1 (
   echo Build failed.
   pause
@@ -21,5 +21,5 @@ if errorlevel 1 (
 )
 
 echo.
-echo Done! Your exe is at: dist\ClientCheck.exe
+echo Done! Your exe is at: dist\Sentinel.exe
 pause
