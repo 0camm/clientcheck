@@ -123,7 +123,7 @@ def verify_key(key):
         return False, 'Could not reach the key server. Check your internet and try again.'
 
 
-MAX_REPORT_CHARS = 100_000
+MAX_REPORT_CHARS = 1_000_000
 REPORT_ATTEMPTS = 3          # the free Render server may be asleep on the first try
 RETRY_STATUSES = {429, 500, 502, 503, 504}
 SAFE_BODY_BYTES = 9_000      # fallback if the server still has a 10 KB JSON limit
