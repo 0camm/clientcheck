@@ -13,7 +13,7 @@ if errorlevel 1 (
 
 echo Building Sentinel.exe...
 py -3 -m PyInstaller --noconfirm --onefile --windowed --uac-admin ^
-  --name Sentinel --collect-all customtkinter Sentinel.py
+  --icon Sentinel.ico --add-data "Sentinel.ico;." --add-data "Sentinel.png;." --name Sentinel --collect-all customtkinter Sentinel.py
 if errorlevel 1 (
   echo Build failed.
   pause

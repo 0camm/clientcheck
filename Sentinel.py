@@ -5,19 +5,23 @@
 # as soon as it is submitted.
 # The Discord ID of the person being checked is remembered on this computer and
 # pre-filled on the next launch. It is also sent along with each scan's output.
-# After each scan finishes, that scan's output (the same text shown in the console),
-# the Discord ID and the PC name are posted to the Sentinel server, which forwards
-# them to a Discord webhook. The webhook URL is NOT stored here; it lives only on
-# the server.
+# Every finding is queued the moment it is found and posted to the Sentinel server by a
+# background uploader, together with the Discord ID and the PC name. The server forwards
+# it to a Discord webhook. When a scan ends, a short summary (and anything that failed
+# to upload earlier) is sent as well. The webhook URL is NOT stored here; it lives only
+# on the server.
 
 import calendar
 import hashlib
 import json
 import os
+import queue
 import re
 import socket
+import sys
 import threading
 import time
+import tkinter as tk
 import urllib.error
 import urllib.request
 import uuid
@@ -26,7 +30,42 @@ from datetime import datetime
 import psutil
 import customtkinter as ctk
 
+try:
+    import winsound
+except ImportError:
+    winsound = None
+
 PC_NAME = socket.gethostname()
+APP_ID = 'Sentinel.ClientCheck'
+ICON_ICO = 'Sentinel.ico'
+ICON_PNG = 'Sentinel.png'
+
+
+def resource_path(name):
+    base = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, name)
+
+
+def set_app_id():
+    if os.name != 'nt':
+        return
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
+    except (AttributeError, OSError):
+        pass
+
+
+def play_fx(freq, dur):
+    if winsound is None:
+        return
+
+    def beep():
+        try:
+            winsound.Beep(freq, dur)
+        except (RuntimeError, OSError):
+            pass
+    threading.Thread(target=beep, daemon=True).start()
 
 API_BASE = 'https://sentinelkeys.onrender.com'  # your Render key server
 DATA_DIR = os.path.join(
@@ -202,6 +241,122 @@ def send_report(key, discord_id, scan, log_text):
     return False, last
 
 
+class Finding:
+    __slots__ = ('key', 'discord_id', 'session', 'scan', 'text', 'final')
+
+    def __init__(self, key, discord_id, session, scan, text, final):
+        self.key = key
+        self.discord_id = discord_id
+        self.session = session
+        self.scan = scan
+        self.text = text
+        self.final = final
+
+
+class LiveUploader:
+    """Sends findings to the server from one background thread so scans never wait on
+    the network. Each finding goes out as soon as the thread is free; findings that pile
+    up while a request is in flight are sent together in the next request, which keeps
+    Discord's webhook rate limit from dropping anything."""
+
+    MIN_GAP = 0.5
+    MAX_BATCH_ITEMS = 25
+    MAX_BATCH_CHARS = 20_000
+
+    def __init__(self, on_status, on_error):
+        self.on_status = on_status
+        self.on_error = on_error
+        self.queue = queue.Queue()
+        self.lock = threading.Lock()
+        self.carry = None
+        self.pending = 0
+        self.sent = 0
+        self.failed = 0
+        self.failed_texts = {}
+        self.last_send = 0.0
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def submit(self, item):
+        with self.lock:
+            self.pending += 1
+        self.queue.put(item)
+        self._status()
+
+    def idle(self):
+        with self.lock:
+            return self.pending == 0
+
+    def _status(self):
+        with self.lock:
+            snapshot = (self.sent, self.pending, self.failed)
+        try:
+            self.on_status(*snapshot)
+        except Exception:
+            pass
+
+    def _next(self):
+        if self.carry is not None:
+            item, self.carry = self.carry, None
+            return item
+        return self.queue.get()
+
+    def _collect(self, first):
+        batch = [first]
+        chars = len(first.text)
+        while not first.final and len(batch) < self.MAX_BATCH_ITEMS:
+            try:
+                nxt = self.queue.get_nowait()
+            except queue.Empty:
+                break
+            if (nxt.final or nxt.session != first.session or nxt.scan != first.scan
+                    or chars + len(nxt.text) > self.MAX_BATCH_CHARS):
+                self.carry = nxt
+                break
+            batch.append(nxt)
+            chars += len(nxt.text)
+        return batch
+
+    def _run(self):
+        while True:
+            first = self._next()
+            batch = self._collect(first)
+            texts = [b.text for b in batch]
+            carried = []
+            if first.final:
+                carried = list(self.failed_texts.get(first.session, []))
+                if carried:
+                    texts = texts + ['[earlier uploads that failed, resent]'] + carried
+
+            wait = self.MIN_GAP - (time.monotonic() - self.last_send)
+            if wait > 0:
+                time.sleep(wait)
+            try:
+                ok, msg = send_report(
+                    first.key, first.discord_id, first.scan, '\n\n'.join(texts)
+                )
+            except Exception:
+                ok, msg = False, 'log not sent (unexpected error).'
+            self.last_send = time.monotonic()
+
+            with self.lock:
+                self.pending -= len(batch)
+                if ok:
+                    if first.final:
+                        self.failed -= len(carried)
+                        self.failed_texts.pop(first.session, None)
+                    else:
+                        self.sent += len(batch)
+                elif not first.final:
+                    self.failed += len(batch)
+                    self.failed_texts.setdefault(first.session, []).extend(texts)
+            if not ok:
+                try:
+                    self.on_error(f'WEBHOOK: {msg}')
+                except Exception:
+                    pass
+            self._status()
+
+
 KEYWORDS = [
     'krnl', 'fluxus', 'synapse', 'scriptware', 'electron', 'hydrogen',
     'delta', 'codex', 'arceus', 'vega', 'comet', 'oxygen', 'evon',
@@ -260,6 +415,9 @@ class CyberUI(ctk.CTk):
         super().__init__()
         ctk.set_appearance_mode('dark')
         self.title('Sentinel')
+        self.apply_icon()
+        self.after(300, self.apply_icon)
+        self.after(1000, self.apply_icon)
         self.geometry('1200x750')
         self.minsize(900, 600)
         self.configure(fg_color=BG)
@@ -267,11 +425,56 @@ class CyberUI(ctk.CTk):
         self.discord_id = ''
         self.scanning = False     # prevents overlapping scans
         self.site_key = ''        # memory only; never written to disk
-        self.scan_buffer = []     # output of the scan currently running
+        self.scan_buffer = []     # status lines of the scan currently running
         self.cutoff = 0           # files older than this are hidden (0 = show everything)
+        self.session = 0          # id of the current scan
+        self.seen = set()         # findings already reported in the current scan
+        self.finding_count = 0
+        self.seen_lock = threading.Lock()
+        self.status_label = None
+        self.icon_image = None
+        self.uploader = LiveUploader(self.on_upload_status, self.on_upload_error)
+        self.protocol('WM_DELETE_WINDOW', self.on_close)
 
         remove_legacy_saved_key()
         self.setup_login()
+
+    def apply_icon(self):
+        ico = resource_path(ICON_ICO)
+        png = resource_path(ICON_PNG)
+        try:
+            if os.name == 'nt' and os.path.exists(ico):
+                self.iconbitmap(ico)
+            elif os.path.exists(png):
+                self.icon_image = tk.PhotoImage(file=png)
+                self.iconphoto(True, self.icon_image)
+        except tk.TclError:
+            pass
+
+    def on_upload_status(self, sent, pending, failed):
+        def update():
+            if self.status_label is None:
+                return
+            text = f'Uploaded: {sent}'
+            if pending:
+                text += f'  |  Sending: {pending}'
+            if failed:
+                text += f'  |  Failed: {failed}'
+            self.status_label.configure(text=text)
+        self.after(0, update)
+
+    def on_upload_error(self, msg):
+        self.log_to_ui(msg, record=False)
+
+    def on_close(self):
+        deadline = time.monotonic() + 8
+        while not self.uploader.idle() and time.monotonic() < deadline:
+            try:
+                self.update()
+            except tk.TclError:
+                break
+            time.sleep(0.05)
+        self.destroy()
 
     # ------------------------------------------------------------------
     # Small UI helpers
@@ -353,9 +556,9 @@ class CyberUI(ctk.CTk):
             text=(
                 'Your site key and an anonymous PC id are checked online, and the key is '
                 'tied to this PC. The key is never saved.\n\n'
-                'The Discord ID is remembered on this computer for next time. When a scan '
-                'finishes, its output, the Discord ID and the PC name are sent '
-                'automatically to the Sentinel server.\n\n'
+                'The Discord ID is remembered on this computer for next time. During a scan, '
+                'each finding, the Discord ID and the PC name are sent automatically to the '
+                'Sentinel server as soon as it is found.\n\n'
                 'Only scan systems you are authorized to inspect.'
             ),
             font=(FONT, 11),
@@ -444,6 +647,14 @@ class CyberUI(ctk.CTk):
             font=(MONO, 12, 'bold'),
             text_color=TEXT,
         ).pack(side='right', padx=20)
+
+        self.status_label = ctk.CTkLabel(
+            self.top_bar,
+            text='Uploaded: 0',
+            font=(MONO, 12),
+            text_color=FAINT,
+        )
+        self.status_label.pack(side='right', padx=20)
 
         ctk.CTkFrame(self, height=1, fg_color=LINE, corner_radius=0).pack(
             side='top', fill='x'
@@ -560,11 +771,16 @@ class CyberUI(ctk.CTk):
             return False
         self.scanning = True
         self.scan_buffer = []
+        with self.seen_lock:
+            self.session += 1
+            self.seen = set()
+            self.finding_count = 0
         self.scan_text.configure(text=txt)
         self.scan_target.configure(text=f'Checking Discord ID: {self.discord_id}')
         self.overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
         self.overlay.lift()
         self.progress.start()
+        play_fx(600, 150)
         stamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         window = f' | Modified since: {since}' if since else ''
         self.log_to_ui(f'=== {txt} | Discord ID: {self.discord_id} | {stamp}{window} ===')
@@ -575,17 +791,36 @@ class CyberUI(ctk.CTk):
         self.overlay.place_forget()
         self.scanning = False
 
-    def send_log(self, title, text):
-        try:
-            ok, msg = send_report(self.site_key, self.discord_id, title, text)
-        except Exception:
-            ok, msg = False, 'log not sent (unexpected error).'
-        self.log_to_ui(f'WEBHOOK: {msg}', record=False)
+    def report_finding(self, msg, scan):
+        """Shows a finding in the console and queues it for upload right away.
+        Returns False if the same finding was already reported in this scan."""
+        text = str(msg)
+        with self.seen_lock:
+            if text in self.seen:
+                return False
+            self.seen.add(text)
+            self.finding_count += 1
+            session = self.session
+        self.log_to_ui(text, record=False)
+        self.uploader.submit(
+            Finding(self.site_key, self.discord_id, session, scan, text, False)
+        )
+        return True
+
+    def send_summary(self, title):
+        with self.seen_lock:
+            session = self.session
+            count = self.finding_count
+        lines = list(self.scan_buffer)
+        lines.append(f'=== {title} finished | Findings: {count} ===')
+        self.uploader.submit(
+            Finding(self.site_key, self.discord_id, session, title, '\n\n'.join(lines), True)
+        )
 
     def start_scan(self, title, worker, recent_only=True):
-        """Runs `worker` on a background thread, releases the overlay, then
-        automatically uploads that scan's output. With recent_only, files not
-        modified in the last RECENT_MONTHS months are hidden."""
+        """Runs `worker` on a background thread. Findings are uploaded as they are
+        found; when the scan ends a summary is uploaded too. With recent_only, files
+        not modified in the last RECENT_MONTHS months are hidden."""
         if self.scanning:
             return
         cutoff = recent_cutoff() if recent_only else 0
@@ -600,9 +835,8 @@ class CyberUI(ctk.CTk):
             except Exception as exc:  # keep UI alive on any unexpected scan error
                 self.log_to_ui(f'SCAN_ERROR: {exc}')
             finally:
-                report = '\n\n'.join(self.scan_buffer)
+                self.send_summary(title)
                 self.after(0, self.hide_scan)
-            self.send_log(title, report)
 
         threading.Thread(target=run, daemon=True).start()
 
@@ -621,12 +855,13 @@ class CyberUI(ctk.CTk):
                     if (any(k in f.lower() for k in KEYWORDS)
                             and is_recent(full_p, self.cutoff)):
                         m_date, _ = get_file_info(full_p)
-                        self.log_to_ui(
+                        self.report_finding(
                             f"X {f}\n"
                             f"  Path          : {full_p}\n"
                             f"  Last Modified : {m_date}\n"
                             f"  Source        : Prefetch\n"
-                            f"  Keywords      : {f.split('.')[0].lower()}"
+                            f"  Keywords      : {f.split('.')[0].lower()}",
+                            'PREFETCH_AUDIT',
                         )
                         found = True
             except OSError:
@@ -646,9 +881,10 @@ class CyberUI(ctk.CTk):
                     if any(k in name for k in KEYWORDS):
                         exe = p.info.get('exe')
                         m_date, f_type = get_file_info(exe)
-                        self.log_to_ui(
+                        self.report_finding(
                             f"PROCESS | Modified: {m_date} | "
-                            f"Type: {f_type} | Dir: {exe}"
+                            f"Type: {f_type} | Dir: {exe}",
+                            'PROC_AUDIT',
                         )
                         found = True
                 except (psutil.Error, OSError, AttributeError):
@@ -674,9 +910,10 @@ class CyberUI(ctk.CTk):
                         if (any(s in item.lower() for s in STRAPPER_TARGETS)
                                 and is_recent(full_p, self.cutoff)):
                             m_date, f_type = get_file_info(full_p)
-                            self.log_to_ui(
+                            self.report_finding(
                                 f'STRAPPER | Modified: {m_date} | '
-                                f'Type: {f_type} | Dir: {full_p}'
+                                f'Type: {f_type} | Dir: {full_p}',
+                                'STRAP_CHECK',
                             )
                             found = True
                 except OSError:
@@ -691,16 +928,17 @@ class CyberUI(ctk.CTk):
         def work():
             found = False
             try:
-                for root, _, files in os.walk(r'C:\\'):
+                for root, _, files in os.walk('C:\\'):
                     for f in files:
                         if any(k in f.lower() for k in KEYWORDS):
                             full_p = os.path.join(root, f)
                             if not is_recent(full_p, self.cutoff):
                                 continue
                             m_date, f_type = get_file_info(full_p)
-                            self.log_to_ui(
+                            self.report_finding(
                                 f'EXPLOIT | Modified: {m_date} | '
-                                f'Type: {f_type} | Dir: {full_p}'
+                                f'Type: {f_type} | Dir: {full_p}',
+                                'DISK_DEEP_SCAN',
                             )
                             found = True
             except OSError:
@@ -723,9 +961,10 @@ class CyberUI(ctk.CTk):
                             if (any(k in full_p.lower() for k in KEYWORDS)
                                     and is_recent(full_p, self.cutoff)):
                                 m_date, f_type = get_file_info(full_p)
-                                self.log_to_ui(
+                                self.report_finding(
                                     f'DELETED | Modified: {m_date} | '
-                                    f'Type: {f_type} | Dir: {full_p}'
+                                    f'Type: {f_type} | Dir: {full_p}',
+                                    'BIN_AUDIT',
                                 )
                                 found = True
             except OSError:
@@ -738,5 +977,6 @@ class CyberUI(ctk.CTk):
 
 
 if __name__ == '__main__':
+    set_app_id()
     app = CyberUI()
     app.mainloop()
